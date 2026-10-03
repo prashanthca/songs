@@ -1,7 +1,8 @@
 import argparse
+import math
 import numpy as np
 import soundfile as sf
-from scipy.signal import fftconvolve, windows
+from scipy.signal import fftconvolve, resample_poly, windows
 import pyloudnorm as pyln
 from pedalboard import (
     Pedalboard,
@@ -17,16 +18,22 @@ from pedalboard import (
 )
 
 def load_audio(path, target_sr=None):
-    """Loads audio, validates sample rate, and outputs float32 (channels, samples) for Pedalboard."""
+    """Loads audio, resamples if needed, and outputs float32 (channels, samples) for Pedalboard."""
     data, sr = sf.read(path, dtype='float32')
-    if target_sr is not None and sr != target_sr:
-        raise ValueError(f"Sample rate mismatch: {path} has {sr}Hz, expected {target_sr}Hz.")
-    
+
     # Pedalboard expects (channels, samples)
     if data.ndim == 1:
         data = np.stack([data, data], axis=0) # duplicate mono to stereo
     else:
         data = data.T  # (samples, channels) -> (channels, samples)
+
+    if target_sr is not None and sr != target_sr:
+        print(f"  [resample] {path}: {sr} Hz -> {target_sr} Hz")
+        g = math.gcd(sr, target_sr)
+        up, down = target_sr // g, sr // g
+        data = resample_poly(data, up, down, axis=1).astype('float32')
+        sr = target_sr
+
     return data, sr
 
 def compute_spectrum(signal_2ch, n_fft=4096, hop_length=1024):
@@ -127,6 +134,8 @@ def process_and_master(
     orig_vocal_path="vocals.wav",
     rvc_vocal_path="rvc_vocals.wav",
     inst_path="no_vocals.wav",
+    backing_vocal_path=None,      # optional: backing/harmony vocal stem
+    backing_gain_db=0.0,          # level trim for backing vocals in dB
     out_vocal_path="rvc_cla_polished.wav",
     out_master_path="final_song_master.wav",
     # CLA chain knobs
@@ -144,11 +153,23 @@ def process_and_master(
     rvc_voc, _ = load_audio(rvc_vocal_path, target_sr=sr)
     inst, _ = load_audio(inst_path, target_sr=sr)
 
+    backing_voc = None
+    if backing_vocal_path:
+        print(f"Loading backing vocals: {backing_vocal_path}")
+        backing_voc, _ = load_audio(backing_vocal_path, target_sr=sr)
+
     # Align lengths
-    min_len = min(orig_voc.shape[1], rvc_voc.shape[1], inst.shape[1])
+    min_len = min(
+        orig_voc.shape[1],
+        rvc_voc.shape[1],
+        inst.shape[1],
+        *([] if backing_voc is None else [backing_voc.shape[1]]),
+    )
     orig_voc = orig_voc[:, :min_len]
     rvc_voc = rvc_voc[:, :min_len]
     inst = inst[:, :min_len]
+    if backing_voc is not None:
+        backing_voc = backing_voc[:, :min_len]
 
     # Step 1: Neutralize AI artifacts and match spectral contour
     print("Step 1: Running Match EQ against original vocals...")
@@ -179,7 +200,12 @@ def process_and_master(
     # Step 4: Sum with backing track and output final files
     print("Step 4: Summing mix & running master limiter...")
     final_mix = inst + polished_voc
-    
+
+    if backing_voc is not None:
+        backing_gain_linear = 10 ** (backing_gain_db / 20.0)
+        final_mix = final_mix + backing_voc * backing_gain_linear
+        print(f"  + Backing vocals added (gain: {backing_gain_db:+.1f} dB)")
+
     # Peak normalization/limiting
     max_peak = np.max(np.abs(final_mix))
     if max_peak > 0.98:
@@ -207,6 +233,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--inst", default="no_vocals.wav", metavar="FILE",
         help="Instrumental backing track (default: no_vocals.wav)"
+    )
+    parser.add_argument(
+        "--backing-vocal", default=None, metavar="FILE",
+        help="Backing / harmony vocal stem to include in the final mix (optional)"
+    )
+    parser.add_argument(
+        "--backing-gain", type=float, default=0.0, metavar="DB",
+        help="Level trim for backing vocals in dB, e.g. -3 to duck them under the lead (default: 0.0)"
     )
     parser.add_argument(
         "--out-vocal", default="rvc_cla_polished.wav", metavar="FILE",
@@ -257,6 +291,8 @@ if __name__ == "__main__":
         orig_vocal_path=args.orig_vocal,
         rvc_vocal_path=args.rvc_vocal,
         inst_path=args.inst,
+        backing_vocal_path=args.backing_vocal,
+        backing_gain_db=args.backing_gain,
         out_vocal_path=args.out_vocal,
         out_master_path=args.out_master,
         bass_mode=args.bass_mode,
