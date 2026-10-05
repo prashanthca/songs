@@ -29,17 +29,42 @@ import scipy.signal as sps
 # ---------------------------------------------------------------------------
 
 def load_rvc_backend():
-    """Import the RVC inference class; raise ImportError with install hint if missing."""
+    """
+    Import the RVC inference class.
+
+    Supported packages (both expose the same API):
+      - infer-rvc-python  (recommended — no fairseq dependency, works on Python 3.11+)
+
+    Install:
+        pip install infer-rvc-python      # install the working fork
+    """
     try:
         from rvc_python.infer import RVCInference
         return RVCInference
+    except ValueError as e:
+        # fairseq's dataclass configs break on Python 3.11 with:
+        #   "mutable default <class 'fairseq.dataclass.configs.CommonConfig'>
+        #    for field common is not allowed: use default_factory"
+        if "mutable default" in str(e) and "fairseq" in str(e).lower():
+            print(
+                "\nERROR: rvc-python failed to load because fairseq is incompatible with Python 3.11+.\n"
+                "\nFix (takes ~30 seconds):\n"
+                "    pip uninstall rvc-python -y\n"
+                "    pip install infer-rvc-python\n"
+                "\ninfer-rvc-python is a drop-in replacement without the fairseq dependency.\n",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        raise
     except ImportError:
-        pass
-    raise ImportError(
-        "rvc-python is not installed.\n"
-        "Install it with:  pip install rvc-python\n"
-        "Then retry."
-    )
+        print(
+            "\nERROR: No RVC inference package found.\n"
+            "\nInstall with:\n"
+            "    pip install infer-rvc-python\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
 
 
 # ---------------------------------------------------------------------------
