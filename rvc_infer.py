@@ -200,8 +200,14 @@ def run_rvc(
         _, out_sr = sf.read(input_path)
         out_audio = result
 
-    out_audio = np.asarray(out_audio)
-    out_sr_scalar = int(np.asarray(out_sr).flat[0])  # handles numpy array or plain int
+    def _to_numpy(x):
+        """Convert torch tensor or any array-like to a plain numpy float32 array."""
+        if hasattr(x, 'detach'):          # torch.Tensor
+            x = x.detach().cpu().numpy()
+        return np.asarray(x, dtype='float32')
+
+    out_audio = _to_numpy(out_audio)
+    out_sr_scalar = int(np.asarray(out_sr).flat[0])
     sf.write(output_path, out_audio, out_sr_scalar)
 
     print(f"\nDone -> {output_path}")
