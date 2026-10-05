@@ -4,7 +4,7 @@ rvc_infer.py
 Reads a <filename>.conf (produced by analyze_vocal.py) and performs
 RVC voice conversion using a .pth model file and a .index file.
 
-Requires:  rvc-python   (pip install rvc-python)
+Requires:  infer-rvc-python  (pip install infer-rvc-python)
            torch, soundfile, numpy, scipy
 
 Usage:
@@ -25,51 +25,43 @@ import scipy.signal as sps
 
 
 # ---------------------------------------------------------------------------
-# RVC backend loader  (tries rvc-python, falls back to graceful error)
+# RVC backend loader
 # ---------------------------------------------------------------------------
+
+# infer_rvc_python uses different pitch_algo strings than the conf
+# (rmvpe -> rmvpe+ for better quality, etc.)
+_ALGO_MAP = {
+    "rmvpe":   "rmvpe+",
+    "rmvpe+":  "rmvpe+",
+    "crepe":   "crepe",
+    "harvest": "harvest",
+    "pm":      "pm",
+    "dio":     "harvest",   # dio not supported; harvest is closest
+}
+
 
 def load_rvc_backend():
     """
-    Import the RVC inference class.
-
-    Supported packages (both expose the same API):
-      - infer-rvc-python  (recommended — no fairseq dependency, works on Python 3.11+)
+    Import infer_rvc_python.BaseLoader.
 
     Install:
-        pip install infer-rvc-python      # install the working fork
+        pip install infer-rvc-python
     """
     try:
-        from rvc_python.infer import RVCInference
-        return RVCInference
-    except ValueError as e:
-        # fairseq's dataclass configs break on Python 3.11 with:
-        #   "mutable default <class 'fairseq.dataclass.configs.CommonConfig'>
-        #    for field common is not allowed: use default_factory"
-        if "mutable default" in str(e) and "fairseq" in str(e).lower():
-            print(
-                "\nERROR: rvc-python failed to load because fairseq is incompatible with Python 3.11+.\n"
-                "\nFix (takes ~30 seconds):\n"
-                "    pip uninstall rvc-python -y\n"
-                "    pip install infer-rvc-python\n"
-                "\ninfer-rvc-python is a drop-in replacement without the fairseq dependency.\n",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        raise
+        from infer_rvc_python import BaseLoader
+        return BaseLoader
     except ImportError as e:
         import traceback
         print("\n--- Import error (full traceback) ---", file=sys.stderr)
         traceback.print_exc()
         print("-------------------------------------", file=sys.stderr)
         print(
-            f"\nERROR: Failed to import rvc_python: {e}\n"
-            "\nIf the package is installed but a dependency is missing, install it with:\n"
-            "    pip install infer-rvc-python\n"
-            "\nIf you see a missing module above, install that module separately.\n",
+            f"\nERROR: Failed to import infer_rvc_python: {e}\n"
+            "\nInstall with:\n"
+            "    pip install infer-rvc-python\n",
             file=sys.stderr,
         )
         sys.exit(1)
-
 
 
 # ---------------------------------------------------------------------------
@@ -176,24 +168,40 @@ def run_rvc(
     # ------------------------------------------------------------------
     # 3. Load RVC backend and run
     # ------------------------------------------------------------------
-    RVCInference = load_rvc_backend()
+    BaseLoader = load_rvc_backend()
+
+    # Map our generic param names to infer_rvc_python's apply_conf names
+    pitch_algo  = _ALGO_MAP.get(p_f0_method, p_f0_method)
+    only_cpu    = not (device.startswith("cuda") or device == "mps")
 
     print("\nInitializing RVC model ...")
-    rvc = RVCInference(device=device)
-    rvc.load_model(model_path, index_path=index_path)
-
-    print("Running conversion ...")
-    rvc.infer_file(
-        input_path=input_path,
-        output_path=output_path,
-        f0_up_key=p_f0_up_key,
-        f0_method=p_f0_method,
-        index_rate=p_index_ratio,
-        filter_radius=p_filter_radius,
-        rms_mix_rate=p_rms_mix_rate,
-        protect=p_protect,
+    converter = BaseLoader(only_cpu=only_cpu)
+    converter.apply_conf(
+        tag="voice",
+        file_model=model_path,
+        pitch_algo=pitch_algo,
+        pitch_lvl=p_f0_up_key,
+        file_index=index_path,
+        index_influence=p_index_ratio,
+        respiration_median_filtering=p_filter_radius,
+        envelope_ratio=p_rms_mix_rate,
+        consonant_breath_protection=p_protect,
         resample_sr=p_resample_sr,
     )
+
+    print("Running conversion ...")
+    result = converter.generate_from_cache(audio_data=input_path, tag="voice")
+
+    # generate_from_cache returns (sample_rate, numpy_array) or just numpy_array
+    if isinstance(result, (tuple, list)) and len(result) == 2:
+        out_sr, out_audio = result
+    else:
+        # fall back: read SR from input file
+        _, out_sr = sf.read(input_path)
+        out_audio = result
+
+    out_audio = np.asarray(out_audio)
+    sf.write(output_path, out_audio, int(out_sr))
 
     print(f"\nDone -> {output_path}")
     return output_path
@@ -231,8 +239,9 @@ def main():
         help="Output WAV path (default: <input>_<model>_rvc.wav)"
     )
     parser.add_argument(
-        "--device", default="cpu", metavar="DEV",
-        help="Torch device: cpu | cuda | cuda:0 (default: cpu)"
+        "--device", default="cuda" if __import__('torch').cuda.is_available() else "cpu",
+        metavar="DEV",
+        help="Torch device: cpu | cuda | cuda:0 (default: cuda if available, else cpu)"
     )
 
     # Per-run parameter overrides (override .conf values)
@@ -242,7 +251,7 @@ def main():
     )
     parser.add_argument(
         "--f0-method", default=None,
-        choices=["rmvpe", "crepe", "harvest", "pm", "dio"],
+        choices=["rmvpe", "rmvpe+", "crepe", "harvest", "pm", "dio"],
         help="Override F0 extraction method from conf"
     )
     parser.add_argument(
