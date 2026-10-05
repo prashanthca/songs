@@ -201,7 +201,8 @@ def run_rvc(
         out_audio = result
 
     out_audio = np.asarray(out_audio)
-    sf.write(output_path, out_audio, int(out_sr))
+    out_sr_scalar = int(np.asarray(out_sr).flat[0])  # handles numpy array or plain int
+    sf.write(output_path, out_audio, out_sr_scalar)
 
     print(f"\nDone -> {output_path}")
     return output_path
