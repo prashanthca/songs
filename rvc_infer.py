@@ -192,13 +192,20 @@ def run_rvc(
     print("Running conversion ...")
     result = converter.generate_from_cache(audio_data=input_path, tag="voice")
 
-    # generate_from_cache returns (sample_rate, numpy_array) or just numpy_array
+    # generate_from_cache returns (result_array, sample_rate)
     if isinstance(result, (tuple, list)) and len(result) == 2:
-        out_sr, out_audio = result
+        elem0, elem1 = result
+        # Discriminate audio array vs sample rate scalar
+        if hasattr(elem0, '__len__') and len(elem0) > 1000:
+            out_audio, out_sr = elem0, elem1
+        elif hasattr(elem1, '__len__') and len(elem1) > 1000:
+            out_audio, out_sr = elem1, elem0
+        else:
+            out_audio, out_sr = elem0, elem1
     else:
         # fall back: read SR from input file
-        _, out_sr = sf.read(input_path)
         out_audio = result
+        _, out_sr = sf.read(input_path)
 
     def _to_numpy(x):
         """Convert torch tensor or any array-like to a plain numpy float32 array."""
@@ -208,6 +215,11 @@ def run_rvc(
 
     out_audio = _to_numpy(out_audio)
     out_sr_scalar = int(np.asarray(out_sr).flat[0])
+
+    # Ensure valid audio shape
+    if out_audio.ndim > 2:
+        out_audio = out_audio.squeeze()
+
     sf.write(output_path, out_audio, out_sr_scalar)
 
     print(f"\nDone -> {output_path}")
