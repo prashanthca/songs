@@ -56,11 +56,16 @@ def load_rvc_backend():
             )
             sys.exit(1)
         raise
-    except ImportError:
+    except ImportError as e:
+        import traceback
+        print("\n--- Import error (full traceback) ---", file=sys.stderr)
+        traceback.print_exc()
+        print("-------------------------------------", file=sys.stderr)
         print(
-            "\nERROR: No RVC inference package found.\n"
-            "\nInstall with:\n"
-            "    pip install infer-rvc-python\n",
+            f"\nERROR: Failed to import rvc_python: {e}\n"
+            "\nIf the package is installed but a dependency is missing, install it with:\n"
+            "    pip install infer-rvc-python\n"
+            "\nIf you see a missing module above, install that module separately.\n",
             file=sys.stderr,
         )
         sys.exit(1)
